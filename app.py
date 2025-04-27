@@ -16,7 +16,7 @@ class SalaryVisualizationTool:
             'Maximum': [75000, 50000, 37500, 30000, 20000, 15000, 12500, 8100, 6300, 4400, 2800, 1400]
         }
         
-        self.market_data = [65900, 56300, 46300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300]
+        self.market_data = [5000, 26300, 46300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 65900]
         
         # Convert data to pandas DataFrame
         self.grade_df = pd.DataFrame(self.grade_data)
@@ -390,12 +390,58 @@ class SalaryVisualizationTool:
     
     def generate_download_link(self, fig):
         """Generate a download link for the visualization"""
+        # Create a copy of the figure to ensure we don't modify the original
+        download_fig = fig
+        
+        # Ensure the y-axis has proper formatting for the download version
+        download_fig.update_layout(
+            yaxis=dict(
+                title={
+                    'text': 'SALARY (AED)',
+                    'font': {'size': 24, 'family': 'Helvetica, Arial, sans-serif', 'color': '#000000', 'weight': 'bold'},
+                    'standoff': 25
+                },
+                autorange=True,
+                gridcolor='rgba(0, 0, 0, 0.3)',
+                gridwidth=2,
+                showgrid=True,
+                zeroline=True,
+                zerolinecolor='#000000',
+                zerolinewidth=3,
+                showline=True,
+                linecolor='#000000',
+                linewidth=3,
+                tickformat=',d',
+                tickprefix='AED ',
+                tickfont=dict(
+                    family="Helvetica, Arial, sans-serif",
+                    size=18,
+                    color="#000000"
+                ),
+                nticks=15,
+                showticklabels=True
+            ),
+            margin=dict(l=140, r=80, t=120, b=120),  # Increase left margin even more for download version
+        )
+        
+        # Force the figure to render all y-axis labels
+        download_fig.update_yaxes(
+            showticklabels=True,
+            automargin=True,
+        )
+        
+        # Write to HTML with full labels
         buffer = io.StringIO()
-        fig.write_html(buffer)
+        download_fig.write_html(
+            buffer,
+            include_plotlyjs='cdn',
+            full_html=True,
+            config={'displayModeBar': True, 'responsive': True}
+        )
         html_bytes = buffer.getvalue().encode()
         encoded = base64.b64encode(html_bytes).decode()
         
-        href = f'<a href="data:text/html;base64,{encoded}" download="salary_visualization.html">Download HTML File</a>'
+        href = f'<a href="data:text/html;base64,{encoded}" download="salary_visualization.html" class="download-button">Download HTML File</a>'
         return href
 
 def display_guide():
@@ -453,6 +499,25 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    
+    # Add custom CSS for styling
+    st.markdown("""
+    <style>
+    .download-button {
+        color: #0366d6;
+        text-decoration: underline;
+        cursor: pointer;
+        background: none;
+        border: none;
+        padding: 0;
+        font-size: 16px;
+        margin: 10px 0;
+    }
+    .download-button:hover {
+        color: #0056b3;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     
     # Initialize the tool
     if 'tool' not in st.session_state:
