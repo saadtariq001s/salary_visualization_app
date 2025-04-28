@@ -16,7 +16,7 @@ class SalaryVisualizationTool:
             'Maximum': [75000, 50000, 37500, 30000, 20000, 15000, 12500, 8100, 6300, 4400, 2800, 1400]
         }
         
-        self.market_data = [5000, 26300, 46300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 65900]
+        self.market_data = [65900, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 46300, 26300, 5000]
         
         # Convert data to pandas DataFrame
         self.grade_df = pd.DataFrame(self.grade_data)
@@ -94,6 +94,18 @@ class SalaryVisualizationTool:
         mid_values = self.grade_df['Midpoint'].tolist()
         max_values = self.grade_df['Maximum'].tolist()
         
+        # Important fix: Reorder market data to match the sorted grade order
+        sorted_market_data = []
+        for grade in grades:
+            # Calculate the index in the original market_data array
+            # Original data is for grades 12 down to 1, so we need to adjust the index
+            original_index = 12 - grade  # If grade is 1, we need index 11 (last item)
+            if 0 <= original_index < len(self.market_data):
+                sorted_market_data.append(self.market_data[original_index])
+            else:
+                # Fallback if grade is out of range
+                sorted_market_data.append(0)
+        
         # Layer 1: Vertical bars for salary ranges
         for i, grade in enumerate(grades):
             # Create bar for each grade's salary range
@@ -154,9 +166,10 @@ class SalaryVisualizationTool:
             ))
         
         # Layer 2: Market 50th percentile line - Enhanced style
+        # Use the sorted market data instead of the original
         fig.add_trace(go.Scatter(
             x=grades,
-            y=self.market_data[:len(grades)],
+            y=sorted_market_data,  # Use our reordered market data
             mode='lines+markers',
             line=dict(
                 color='rgba(25, 25, 112, 0.95)', 
@@ -175,7 +188,7 @@ class SalaryVisualizationTool:
             name='Market 50th Percentile',
             hovertemplate="<b>Market 50th Percentile</b><br>Grade %{x}<br>AED %{y:,.0f}<extra></extra>"
         ))
-        
+            
         # Layer 3: Employee salary data points if available
         if self.employee_df is not None:
             # Group employees by grade
