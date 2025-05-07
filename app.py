@@ -11,12 +11,27 @@ class SalaryVisualizationTool:
         # Default data
         self.grade_data = {
             'Grade': [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
-            'Minimum': [45000, 30000, 22500, 18000, 12000, 9000, 7500, 4900, 3800, 2600, 1700, 900],
-            'Midpoint': [60000, 40000, 30000, 24000, 16000, 12000, 10000, 6500, 5000, 3500, 2200, 1100],
-            'Maximum': [75000, 50000, 37500, 30000, 20000, 15000, 12500, 8100, 6300, 4400, 2800, 1400]
+            'Minimum': [45000, 30000, 22500, 18000, 12000, 9000, 7500, 4875, 3750, 2625, 1650, 855],
+            'Midpoint': [60000, 40000, 30000, 24000, 16000, 12000, 10000, 6500, 5000, 3500, 2200, 1140],
+            'Maximum': [75000, 50000, 37500, 30000, 20000, 15000, 12500, 8125, 6250, 4375, 2750, 1425]
         }
         
-        self.market_data = [65900, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 56300, 46300, 26300, 5000]
+        # Updated market data based on the provided table
+        # In reverse order (12 to 1) for compatibility with visualization
+        self.market_data = [
+            76200,   # Grade 12
+            49800,   # Grade 11
+            38100,   # Grade 10
+            30936,   # Grade 9
+            22678,   # Grade 8
+            16555,   # Grade 7
+            12390,   # Grade 6
+            8443.5,  # Grade 5
+            6350,    # Grade 4
+            4515,    # Grade 3
+            2816,    # Grade 2
+            1482     # Grade 1
+        ]
         
         # Convert data to pandas DataFrame
         self.grade_df = pd.DataFrame(self.grade_data)
@@ -72,13 +87,53 @@ class SalaryVisualizationTool:
     def update_market_data(self, new_market_data):
         """Update market data with new values"""
         try:
-            for i, value in enumerate(new_market_data):
-                if i < len(self.market_data):
-                    self.market_data[i] = value
+            # Create a new market data array based on the data editor values
+            updated_market_data = []
+            
+            # Create a dictionary mapping grades to their market values from the edited data
+            grade_to_market = {}
+            for i, row in enumerate(new_market_data.itertuples()):
+                grade_to_market[row.Grade] = row.Market_50th_Percentile
+                
+            # Rebuild the market_data array in the proper order (12 down to 1)
+            # This ensures compatibility with the visualization function
+            for grade in range(12, 0, -1):  # From grade 12 down to grade 1
+                if grade in grade_to_market:
+                    updated_market_data.append(grade_to_market[grade])
+                else:
+                    # Use a default or existing value if available
+                    grade_index = 12 - grade
+                    if 0 <= grade_index < len(self.market_data):
+                        updated_market_data.append(self.market_data[grade_index])
+                    else:
+                        updated_market_data.append(0)
+            
+            # Update the market data array
+            self.market_data = updated_market_data
             
             return True, "Market data updated successfully"
         except Exception as e:
             return False, f"Failed to update market data: {str(e)}"
+        
+    def set_predefined_market_data(self):
+        """Set the market data to predefined values from the table"""
+        # These values match the "Market Mid Point" column from your table
+        self.market_data = [
+            76200,   # Grade 12
+            49800,   # Grade 11
+            38100,   # Grade 10
+            30936,   # Grade 9
+            22678,   # Grade 8
+            16555,   # Grade 7
+            12390,   # Grade 6
+            8443.5,  # Grade 5
+            6350,    # Grade 4
+            4515,    # Grade 3
+            2816,    # Grade 2
+            1482     # Grade 1
+        ]
+        return True, "Market data updated with predefined values"
+    
     
     def generate_visualization(self):
         """Generate the salary visualization based on current data"""
@@ -94,7 +149,7 @@ class SalaryVisualizationTool:
         mid_values = self.grade_df['Midpoint'].tolist()
         max_values = self.grade_df['Maximum'].tolist()
         
-        # Important fix: Reorder market data to match the sorted grade order
+        # Map market data to corresponding grades
         sorted_market_data = []
         for grade in grades:
             # Calculate the index in the original market_data array
@@ -457,6 +512,35 @@ class SalaryVisualizationTool:
         href = f'<a href="data:text/html;base64,{encoded}" download="salary_visualization.html" class="download-button">Download HTML File</a>'
         return href
 
+def add_to_main():
+    # Place this inside the main() function in the Market data section
+    if st.button("Set Predefined Market Data"):
+        success, message = st.session_state.tool.set_predefined_market_data()
+        if success:
+            st.success(message)
+            
+            # Update the displayed data in the data editor
+            market_data_df = pd.DataFrame({
+                'Grade': st.session_state.tool.grade_df['Grade'],
+                'Market 50th Percentile': [
+                    1482,    # Grade 1
+                    2816,    # Grade 2
+                    4515,    # Grade 3
+                    6350,    # Grade 4
+                    8443.5,  # Grade 5
+                    12390,   # Grade 6
+                    16555,   # Grade 7
+                    22678,   # Grade 8
+                    30936,   # Grade 9
+                    38100,   # Grade 10
+                    49800,   # Grade 11
+                    76200    # Grade 12
+                ][:len(st.session_state.tool.grade_df)]
+            })
+            st.write("Market data updated with values from the table")
+            st.dataframe(market_data_df)
+        else:
+            st.error(message)
 def display_guide():
     """Display user guide"""
     st.title("Welcome to the Salary Visualization Tool")
