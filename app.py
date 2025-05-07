@@ -6,7 +6,7 @@ from datetime import datetime
 import base64
 import io
 
-class SalaryVisualizationTool:
+class PayVisualizer:
     def __init__(self):
         # Default data
         self.grade_data = {
@@ -38,37 +38,146 @@ class SalaryVisualizationTool:
         self.employee_df = None
         
     def load_employee_data(self, uploaded_file):
-        """Load employee data from uploaded Excel file"""
+        """Load employee data from uploaded Excel file with improved error handling"""
         try:
-            # Load Excel file
-            self.employee_df = pd.read_excel(uploaded_file)
+            # First, print debug information about the file
+            file_info = f"Loading file: {uploaded_file.name}, Size: {uploaded_file.size} bytes"
+            print(file_info)
             
-            # Check if required columns exist
+            # Load Excel file - with explicit engine specification
+            try:
+                # Try with openpyxl engine first (newer Excel formats)
+                self.employee_df = pd.read_excel(uploaded_file, engine='openpyxl')
+            except Exception as e1:
+                try:
+                    # Fall back to xlrd engine (older Excel formats)
+                    self.employee_df = pd.read_excel(uploaded_file, engine='xlrd')
+                except Exception as e2:
+                    return False, f"Failed to read Excel file with either engine. Error 1: {str(e1)}, Error 2: {str(e2)}"
+            
+            # Print column information for debugging
+            columns_info = f"Columns found in file: {', '.join(self.employee_df.columns.tolist())}"
+            print(columns_info)
+            
+            # Check if DataFrame is empty
+            if self.employee_df.empty:
+                return False, "The uploaded Excel file doesn't contain any data"
+                
+            # Check if required columns exist (case-insensitive check)
             required_columns = ['EMP ID', 'EMP NAME', 'GRADE', 'TOTAL']
-            missing_columns = [col for col in required_columns if col not in self.employee_df.columns]
+            df_columns_upper = [col.upper() for col in self.employee_df.columns]
+            
+            missing_columns = []
+            column_mapping = {}  # To map required column names to actual column names
+            
+            for req_col in required_columns:
+                # Try to find a match (case-insensitive)
+                found = False
+                for i, col in enumerate(self.employee_df.columns):
+                    if col.upper() == req_col.upper() or col.upper().replace(' ', '') == req_col.upper().replace(' ', ''):
+                        column_mapping[req_col] = col
+                        found = True
+                        break
+                
+                if not found:
+                    missing_columns.append(req_col)
             
             if missing_columns:
                 return False, f"Missing required columns: {', '.join(missing_columns)}"
             
-            # Process the data - Use more robust conversion for GRADE
-            # Extract grade numbers and handle missing/invalid values
-            extracted_grades = self.employee_df['GRADE'].str.extract(r'Grade\s*(\d+)', expand=False)
-            # Convert to numeric, coerce errors to NaN, fill NaN with 0, then convert to int
-            self.employee_df['GRADE'] = pd.to_numeric(extracted_grades, errors='coerce')
+            # Rename columns to expected format if needed
+            if column_mapping:
+                self.employee_df = self.employee_df.rename(columns={column_mapping[k]: k for k in column_mapping})
+            
+            # Handle GRADE column - more flexible extraction with detailed error reporting
+            try:
+                # First, check if GRADE is already numeric
+                if pd.api.types.is_numeric_dtype(self.employee_df['GRADE']):
+                    # If already numeric, just ensure it's an integer
+                    self.employee_df['GRADE'] = self.employee_df['GRADE'].astype(int)
+                else:
+                    # Try multiple extraction patterns for text-based grades
+                    patterns = [
+                        r'Grade\s*(\d+)',  # "Grade 12" format
+                        r'G\s*(\d+)',      # "G 12" format
+                        r'(\d+)',          # Just the number
+                    ]
+                    
+                    # Try each pattern
+                    for pattern in patterns:
+                        extracted_grades = self.employee_df['GRADE'].astype(str).str.extract(pattern, expand=False)
+                        if not extracted_grades.isna().all():
+                            # Found a pattern that works
+                            self.employee_df['GRADE'] = pd.to_numeric(extracted_grades, errors='coerce')
+                            break
+                
+                # Check if we have any valid grades after extraction
+                if self.employee_df['GRADE'].isna().all():
+                    sample_grades = self.employee_df['GRADE'].head(5).tolist()
+                    return False, f"Could not extract numeric grade values. Sample values: {sample_grades}"
+            except Exception as e:
+                return False, f"Error processing GRADE column: {str(e)}"
             
             # Filter out any rows with NaN or 0 grade values
+            original_count = len(self.employee_df)
             self.employee_df = self.employee_df[self.employee_df['GRADE'].notna() & (self.employee_df['GRADE'] > 0)]
+            filtered_count = len(self.employee_df)
             
-            # Convert to integer type after filtering
+            if self.employee_df.empty:
+                return False, f"No valid data rows remaining after filtering invalid grades. Started with {original_count} rows."
+            
+            # Convert GRADE to integer type after filtering
             self.employee_df['GRADE'] = self.employee_df['GRADE'].astype(int)
             
-            # Handle numeric columns that might be formatted as strings
-            if len(self.employee_df) > 0 and isinstance(self.employee_df['TOTAL'].iloc[0], str):
-                self.employee_df['TOTAL'] = self.employee_df['TOTAL'].replace({',': ''}, regex=True).astype(float)
+            # Handle TOTAL column - convert to numeric
+            try:
+                # Handle numeric columns that might be formatted as strings
+                if len(self.employee_df) > 0:
+                    if isinstance(self.employee_df['TOTAL'].iloc[0], str):
+                        self.employee_df['TOTAL'] = self.employee_df['TOTAL'].astype(str).replace({',': '', 'AED': '', ' ': ''}, regex=True)
+                        self.employee_df['TOTAL'] = pd.to_numeric(self.employee_df['TOTAL'], errors='coerce')
+                    
+                    # In case it's still not numeric, force conversion
+                    self.employee_df['TOTAL'] = pd.to_numeric(self.employee_df['TOTAL'], errors='coerce')
+                    
+                    # Check if we have valid salary data
+                    if self.employee_df['TOTAL'].isna().all():
+                        sample_total = [str(x) for x in self.employee_df['TOTAL'].head(5).tolist()]
+                        return False, f"Could not convert TOTAL column to numeric values. Sample values: {sample_total}"
+            except Exception as e:
+                return False, f"Error processing TOTAL column: {str(e)}"
+                
+            # Flag outliers (employees outside their grade's salary range)
+            self.employee_df['IS_OUTLIER'] = False
+            for index, row in self.employee_df.iterrows():
+                grade = row['GRADE']
+                salary = row['TOTAL']
+                
+                # Get min and max for this grade, with error checking
+                grade_row = self.grade_df[self.grade_df['Grade'] == grade]
+                if not grade_row.empty:
+                    grade_min = grade_row['Minimum'].values[0]
+                    grade_max = grade_row['Maximum'].values[0]
+                    
+                    # Check if salary is outside the range
+                    if salary < grade_min or salary > grade_max:
+                        self.employee_df.at[index, 'IS_OUTLIER'] = True
+            
+            # Print summary for debugging
+            summary = (
+                f"Successfully processed {len(self.employee_df)} rows of employee data.\n"
+                f"Grades range from {self.employee_df['GRADE'].min()} to {self.employee_df['GRADE'].max()}.\n"
+                f"Filtered out {original_count - filtered_count} rows with invalid grades."
+            )
+            print(summary)
             
             return True, f"Successfully loaded {len(self.employee_df)} employee records"
             
         except Exception as e:
+            # Get more detailed error information
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Detailed error: {error_details}")
             return False, f"Failed to load employee data: {str(e)}"
     
     def update_grade_data(self, new_grade_data):
@@ -79,6 +188,23 @@ class SalaryVisualizationTool:
                 self.grade_df.loc[self.grade_df['Grade'] == grade, 'Minimum'] = row['Minimum']
                 self.grade_df.loc[self.grade_df['Grade'] == grade, 'Midpoint'] = row['Midpoint']
                 self.grade_df.loc[self.grade_df['Grade'] == grade, 'Maximum'] = row['Maximum']
+            
+            # If employee data is loaded, recompute outliers
+            if self.employee_df is not None:
+                # Flag outliers with the updated grade ranges
+                for index, row in self.employee_df.iterrows():
+                    grade = row['GRADE']
+                    salary = row['TOTAL']
+                    
+                    # Get min and max for this grade
+                    grade_min = self.grade_df.loc[self.grade_df['Grade'] == grade, 'Minimum'].values[0]
+                    grade_max = self.grade_df.loc[self.grade_df['Grade'] == grade, 'Maximum'].values[0]
+                    
+                    # Check if salary is outside the range
+                    if salary < grade_min or salary > grade_max:
+                        self.employee_df.at[index, 'IS_OUTLIER'] = True
+                    else:
+                        self.employee_df.at[index, 'IS_OUTLIER'] = False
             
             return True, "Grade data updated successfully"
         except Exception as e:
@@ -114,10 +240,10 @@ class SalaryVisualizationTool:
             return True, "Market data updated successfully"
         except Exception as e:
             return False, f"Failed to update market data: {str(e)}"
-        
+    
     def set_predefined_market_data(self):
         """Set the market data to predefined values from the table"""
-        # These values match the "Market Mid Point" column from your table
+        # These values match the "Market Mid Point" column from the table
         self.market_data = [
             76200,   # Grade 12
             49800,   # Grade 11
@@ -134,7 +260,6 @@ class SalaryVisualizationTool:
         ]
         return True, "Market data updated with predefined values"
     
-    
     def generate_visualization(self):
         """Generate the salary visualization based on current data"""
         # Create the figure
@@ -149,7 +274,7 @@ class SalaryVisualizationTool:
         mid_values = self.grade_df['Midpoint'].tolist()
         max_values = self.grade_df['Maximum'].tolist()
         
-        # Map market data to corresponding grades
+        # Reorder market data to match the sorted grade order
         sorted_market_data = []
         for grade in grades:
             # Calculate the index in the original market_data array
@@ -248,7 +373,8 @@ class SalaryVisualizationTool:
         if self.employee_df is not None:
             # Group employees by grade
             for grade in grades:
-                grade_employees = self.employee_df[self.employee_df['GRADE'] == grade]
+                # Normal employees (within range)
+                grade_employees = self.employee_df[(self.employee_df['GRADE'] == grade) & (~self.employee_df['IS_OUTLIER'])]
                 
                 if not grade_employees.empty:
                     # Plot employee salaries as scatter points
@@ -294,7 +420,7 @@ class SalaryVisualizationTool:
                         y=grade_employees['TOTAL'].tolist(),
                         mode='markers',
                         marker=dict(
-                            color='rgba(178, 34, 34, 0.8)',  # Firebrick red, more professional
+                            color='rgba(178, 34, 34, 0.8)',  # Firebrick red for normal employees
                             size=8,
                             symbol='circle'
                         ),
@@ -303,6 +429,77 @@ class SalaryVisualizationTool:
                         customdata=np.stack(customdata_list, axis=1),
                         hovertemplate=(
                             '<b>%{text}</b><br>' +
+                            'ID: %{customdata[0]}<br>' +
+                            'Designation: %{customdata[1]}<br>' +
+                            'Department: %{customdata[2]}<br>' +
+                            'Joined: %{customdata[3]}<br>' +
+                            'Nationality: %{customdata[4]}<br>' +
+                            '<br>' +
+                            'Basic Salary: AED %{customdata[5]:,.2f}<br>' +
+                            'Allowances: AED %{customdata[6]:,.2f}<br>' +
+                            'Total Salary: AED %{y:,.2f}' +
+                            '<extra></extra>'
+                        ),
+                        showlegend=False
+                    ))
+                
+                # Outlier employees (outside range)
+                outlier_employees = self.employee_df[(self.employee_df['GRADE'] == grade) & (self.employee_df['IS_OUTLIER'])]
+                
+                if not outlier_employees.empty:
+                    # Plot outlier employee salaries as scatter points with different color
+                    # Safely check for presence of optional columns (same as above)
+                    designation_col = 'DESIGNATION' if 'DESIGNATION' in outlier_employees.columns else None
+                    department_col = 'DEPARTMENT' if 'DEPARTMENT' in outlier_employees.columns else None
+                    doj_col = 'DOJ' if 'DOJ' in outlier_employees.columns else None
+                    nationality_col = 'NATIONALITY' if 'NATIONALITY' in outlier_employees.columns else None
+                    basic_col = 'BASIC' if 'BASIC' in outlier_employees.columns else None
+                    
+                    # Prepare customdata with fallbacks for missing columns
+                    customdata_list = [outlier_employees['EMP ID'].tolist()]
+                    
+                    if designation_col:
+                        customdata_list.append(outlier_employees[designation_col].tolist())
+                    else:
+                        customdata_list.append(["N/A"] * len(outlier_employees))
+                        
+                    if department_col:
+                        customdata_list.append(outlier_employees[department_col].tolist())
+                    else:
+                        customdata_list.append(["N/A"] * len(outlier_employees))
+                        
+                    if doj_col:
+                        customdata_list.append(outlier_employees[doj_col].tolist())
+                    else:
+                        customdata_list.append(["N/A"] * len(outlier_employees))
+                        
+                    if nationality_col:
+                        customdata_list.append(outlier_employees[nationality_col].tolist())
+                    else:
+                        customdata_list.append(["N/A"] * len(outlier_employees))
+                        
+                    if basic_col:
+                        customdata_list.append(outlier_employees[basic_col].tolist())
+                        customdata_list.append((outlier_employees['TOTAL'] - outlier_employees[basic_col]).tolist())
+                    else:
+                        customdata_list.append([0] * len(outlier_employees))
+                        customdata_list.append([0] * len(outlier_employees))
+                    
+                    fig.add_trace(go.Scatter(
+                        x=[grade] * len(outlier_employees),
+                        y=outlier_employees['TOTAL'].tolist(),
+                        mode='markers',
+                        marker=dict(
+                            color='rgba(255, 140, 0, 0.9)',  # Dark orange for outliers
+                            size=10,  # Slightly larger for emphasis
+                            symbol='circle-open',  # Open circles for outliers
+                            line=dict(width=2, color='rgba(255, 140, 0, 1)')  # Darker border
+                        ),
+                        name=f'Grade {grade} Outliers',
+                        text=outlier_employees['EMP NAME'].tolist(),
+                        customdata=np.stack(customdata_list, axis=1),
+                        hovertemplate=(
+                            '<b>%{text} (OUTLIER)</b><br>' +
                             'ID: %{customdata[0]}<br>' +
                             'Designation: %{customdata[1]}<br>' +
                             'Department: %{customdata[2]}<br>' +
@@ -334,6 +531,19 @@ class SalaryVisualizationTool:
             ),
             name='Employee Salary'
         ))
+        
+        # Add outlier legend only if employee data exists
+        if self.employee_df is not None:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(
+                    size=10, 
+                    color='rgba(255, 140, 0, 0.9)',
+                    symbol='circle-open',
+                    line=dict(width=2, color='rgba(255, 140, 0, 1)')
+                ),
+                name='Salary Outliers'
+            ))
         
         fig.add_trace(go.Bar(
             x=[None], y=[None],
@@ -509,41 +719,12 @@ class SalaryVisualizationTool:
         html_bytes = buffer.getvalue().encode()
         encoded = base64.b64encode(html_bytes).decode()
         
-        href = f'<a href="data:text/html;base64,{encoded}" download="salary_visualization.html" class="download-button">Download HTML File</a>'
+        href = f'<a href="data:text/html;base64,{encoded}" download="payvisualizer_report.html" class="download-button">Download HTML File</a>'
         return href
 
-def add_to_main():
-    # Place this inside the main() function in the Market data section
-    if st.button("Set Predefined Market Data"):
-        success, message = st.session_state.tool.set_predefined_market_data()
-        if success:
-            st.success(message)
-            
-            # Update the displayed data in the data editor
-            market_data_df = pd.DataFrame({
-                'Grade': st.session_state.tool.grade_df['Grade'],
-                'Market 50th Percentile': [
-                    1482,    # Grade 1
-                    2816,    # Grade 2
-                    4515,    # Grade 3
-                    6350,    # Grade 4
-                    8443.5,  # Grade 5
-                    12390,   # Grade 6
-                    16555,   # Grade 7
-                    22678,   # Grade 8
-                    30936,   # Grade 9
-                    38100,   # Grade 10
-                    49800,   # Grade 11
-                    76200    # Grade 12
-                ][:len(st.session_state.tool.grade_df)]
-            })
-            st.write("Market data updated with values from the table")
-            st.dataframe(market_data_df)
-        else:
-            st.error(message)
 def display_guide():
     """Display user guide"""
-    st.title("Welcome to the Salary Visualization Tool")
+    st.title("Welcome to PayVisualizer")
     
     st.subheader("This tool helps you see how employee salaries compare with your company's salary ranges and market rates.")
     
@@ -556,7 +737,7 @@ def display_guide():
     
     3️⃣ **Update Market Rates (Optional)** - If you want to change the market comparison values, update the market data.
     
-    4️⃣ **Create Your Chart** - Generate the salary chart. Each employee will show as a red dot, salary ranges as blue bars, and market rates as a blue line.
+    4️⃣ **Create Your Chart** - Generate the salary chart. Each employee will show as a dot, with outliers highlighted in orange.
     
     5️⃣ **Save Your Work** - Download the chart as an HTML file you can open later in any web browser.
     """)
@@ -566,7 +747,8 @@ def display_guide():
     st.markdown("""
     • **Blue Bars** - The salary range for each job grade (from minimum to maximum)
     • **Green Lines** - The midpoint salary for each job grade
-    • **Red Dots** - Each employee's actual salary
+    • **Red Dots** - Employee salaries within the grade range
+    • **Orange Circles** - Outliers (employee salaries outside their grade range)
     • **Blue Line** - Market comparison rates showing what other companies pay
     • **Hover Details** - Move your mouse over any part of the chart to see more information
     """)
@@ -591,7 +773,7 @@ def display_guide():
 def main():
     # Set page configuration
     st.set_page_config(
-        page_title="Salary Visualization Tool",
+        page_title="PayVisualizer",
         page_icon="💰",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -618,7 +800,7 @@ def main():
     
     # Initialize the tool
     if 'tool' not in st.session_state:
-        st.session_state.tool = SalaryVisualizationTool()
+        st.session_state.tool = PayVisualizer()
     
     # Initialize session state variables
     if 'show_guide' not in st.session_state:
@@ -683,7 +865,20 @@ def main():
         
         market_data_df = pd.DataFrame({
             'Grade': st.session_state.tool.grade_df['Grade'],
-            'Market 50th Percentile': st.session_state.tool.market_data[:len(st.session_state.tool.grade_df)]
+            'Market 50th Percentile': [
+                1482,    # Grade 1
+                2816,    # Grade 2
+                4515,    # Grade 3
+                6350,    # Grade 4
+                8443.5,  # Grade 5
+                12390,   # Grade 6
+                16555,   # Grade 7
+                22678,   # Grade 8
+                30936,   # Grade 9
+                38100,   # Grade 10
+                49800,   # Grade 11
+                76200    # Grade 12
+            ][:len(st.session_state.tool.grade_df)]
         })
         
         edited_market_data = st.data_editor(
@@ -694,31 +889,44 @@ def main():
         )
         
         if st.button("Update Market Data"):
-            new_market_data = edited_market_data['Market 50th Percentile'].tolist()
+            new_market_data = edited_market_data
             success, message = st.session_state.tool.update_market_data(new_market_data)
             if success:
                 st.success(message)
             else:
                 st.error(message)
+                
+        if st.button("Reset to Predefined Market Data"):
+            success, message = st.session_state.tool.set_predefined_market_data()
+            if success:
+                st.success(message)
+                # Update the displayed data
+                st.experimental_rerun()
+            else:
+                st.error(message)
     
     elif page == "Visualization":
-        st.title("Salary Visualization")
+        st.title("Pay Visualization")
         
-        # Check if employee data is loaded
-        if st.session_state.tool.employee_df is None:
-            st.warning("Please load employee data first. Go to Data Management to upload your data.")
-        else:
-            # Generate or refresh visualization
-            if st.button("Generate Visualization") or st.session_state.visualization_generated:
-                st.session_state.visualization_generated = True
+        # Always show visualization - with or without employee data
+        if st.button("Generate Visualization") or st.session_state.visualization_generated:
+            st.session_state.visualization_generated = True
+            
+            with st.spinner("Generating visualization..."):
+                fig = st.session_state.tool.generate_visualization()
+                st.plotly_chart(fig, use_container_width=True)
                 
-                with st.spinner("Generating visualization..."):
-                    fig = st.session_state.tool.generate_visualization()
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Add download button
-                    download_link = st.session_state.tool.generate_download_link(fig)
-                    st.markdown(download_link, unsafe_allow_html=True)
+                # Add download button
+                download_link = st.session_state.tool.generate_download_link(fig)
+                st.markdown(download_link, unsafe_allow_html=True)
+                
+                # Add info text about employee data
+                if st.session_state.tool.employee_df is None:
+                    st.info("📊 This visualization shows only grade ranges and market data. Upload employee data in the Data Management section to see employee salaries.")
+                else:
+                    outlier_count = st.session_state.tool.employee_df['IS_OUTLIER'].sum()
+                    if outlier_count > 0:
+                        st.warning(f"⚠️ Found {outlier_count} employee(s) with salaries outside their grade ranges (shown as orange circles).")
 
 if __name__ == "__main__":
     main()
